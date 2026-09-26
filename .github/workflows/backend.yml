@@ -36,11 +36,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client
 
-      - name: Start local Supabase
-        run: supabase start
+      - name: Start local Supabase database
+        run: supabase db start
 
-      - name: Reset database with migrations
-        run: supabase db reset
+      - name: Reset local database with migrations
+        run: supabase db reset --local
 
       - name: Run SQL security tests with psql
         env:
