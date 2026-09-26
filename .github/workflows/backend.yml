@@ -1,0 +1,48 @@
+name: Backend Security
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "supabase/**"
+      - "docs/BACKEND.md"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    paths:
+      - "supabase/**"
+      - "docs/BACKEND.md"
+      - ".github/workflows/backend.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  supabase-security:
+    name: Supabase SQL security tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Start local Supabase
+        run: supabase start
+
+      - name: Reset database with migrations
+        run: supabase db reset
+
+      - name: Run SQL security tests with psql
+        env:
+          DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/voice_security.sql

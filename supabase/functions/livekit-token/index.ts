@@ -47,8 +47,16 @@ function json(status: number, body: Record<string, unknown>, origin: string | nu
   });
 }
 
+function ageMs(isoTimestamp: string): number {
+  return Date.now() - new Date(isoTimestamp).getTime();
+}
+
 function isOldRinging(call: CallRow): boolean {
-  return call.status === "ringing" && Date.now() - new Date(call.created_at).getTime() > 60_000;
+  return call.status === "ringing" && ageMs(call.created_at) > 60_000;
+}
+
+function isStaleAccepted(call: CallRow): boolean {
+  return call.status === "accepted" && ageMs(call.created_at) > 2 * 60 * 60 * 1000;
 }
 
 serve(async (req) => {
@@ -76,12 +84,12 @@ serve(async (req) => {
   }
   const jwt = match[1];
 
-  const adminlessClient = createClient(supabaseUrl, supabaseAnonKey, {
+  const userClient = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: `Bearer ${jwt}` } },
     auth: { persistSession: false },
   });
 
-  const { data: authData, error: authError } = await adminlessClient.auth.getUser(jwt);
+  const { data: authData, error: authError } = await userClient.auth.getUser(jwt);
   if (authError || !authData.user) {
     return json(401, { error: "Invalid Supabase session" }, origin);
   }
@@ -97,9 +105,9 @@ serve(async (req) => {
     return json(400, { error: "call_id is required" }, origin);
   }
 
-  await adminlessClient.rpc("expire_old_ringing_calls");
+  await userClient.rpc("expire_old_ringing_calls");
 
-  const { data: call, error: callError } = await adminlessClient
+  const { data: call, error: callError } = await userClient
     .from("calls")
     .select("id, conversation_id, caller_id, callee_id, status, created_at, ended_at")
     .eq("id", payload.call_id)
@@ -118,6 +126,9 @@ serve(async (req) => {
   }
   if (isOldRinging(call)) {
     return json(409, { error: "Ringing call expired" }, origin);
+  }
+  if (isStaleAccepted(call)) {
+    return json(409, { error: "Accepted call expired" }, origin);
   }
   if (isCaller && call.status !== "ringing" && call.status !== "accepted") {
     return json(409, { error: "Caller can join only ringing or accepted calls" }, origin);
@@ -144,11 +155,6 @@ serve(async (req) => {
 
   const token = await accessToken.toJwt();
 
-  return json(200, {
-    token,
-    url: livekitUrl,
-    room,
-    identity: userId,
-    expires_in: ttlSeconds,
-  }, origin);
+  // Parent iOS client expects exactly these success keys.
+  return json(200, { token, url: livekitUrl }, origin);
 });

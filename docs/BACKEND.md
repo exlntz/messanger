@@ -1,12 +1,15 @@
 # Backend VOICE
 
-Документ описывает стартовый backend для iOS messenger VOICE на Supabase и LiveKit. Backend не содержит секретов. Конфиги проекта, anon key, LiveKit URL и ключи добавляются отдельно.
+Документ описывает backend для iOS messenger VOICE на Supabase и LiveKit. Backend не содержит секретов. Конфиги проекта, anon key, LiveKit URL и ключи добавляются отдельно.
 
 ## Что добавлено
 
-- Supabase SQL migration: `supabase/migrations/202609260001_voice_backend.sql`.
+- Supabase SQL migrations:
+  - `supabase/migrations/202609260001_voice_backend.sql`.
+  - `supabase/migrations/202609260002_voice_backend_hardening.sql`.
 - Edge Function LiveKit token: `supabase/functions/livekit-token`.
 - DB security tests: `supabase/tests/voice_security.sql`.
+- GitHub Actions backend security workflow: `.github/workflows/backend.yml`.
 - Supabase local config: `supabase/config.toml`.
 
 ## Схема данных
@@ -65,8 +68,8 @@ messages(
 - `sender_id = auth.uid()`.
 - Пользователь состоит в `conversation_id`.
 - Для `text` нельзя указать `attachment_path`.
-- Для `image` и `voice` можно указать `attachment_path`.
-- `duration_seconds` разрешен только для `voice`.
+- Если указан `attachment_path`, он должен иметь формат `<conversation UUID>/<auth uid>/<random filename>` и принадлежать текущему conversation и пользователю.
+- Для `voice` можно указать `duration_seconds`.
 
 ### `calls`
 
@@ -90,7 +93,7 @@ calls(
 
 ### `start_direct_chat(other_user_id uuid) returns uuid`
 
-Идемпотентно создает direct conversation для пары пользователей и возвращает UUID conversation.
+Идемпотентно создает direct conversation для пары пользователей и возвращает UUID conversation. Функция использует transaction advisory lock на отсортированную пару пользователей, поэтому одновременные вызовы для одной пары не создают дубль через этот RPC.
 
 REST пример:
 
@@ -133,23 +136,40 @@ Content-Type: application/json
 
 Создает звонок со статусом `ringing`. RPC работает только для direct conversation с 2 участниками.
 
+REST ответ является одним JSON object, не массивом:
+
+```json
+{
+  "id": "<call uuid>",
+  "conversation_id": "<conversation uuid>",
+  "caller_id": "<caller uuid>",
+  "callee_id": "<callee uuid>",
+  "status": "ringing",
+  "created_at": "2026-09-26T00:00:00Z",
+  "ended_at": null
+}
+```
+
 Защита:
 
 - Caller должен быть участником conversation.
 - Callee определяется сервером.
-- Если caller или callee уже имеет `ringing` или `accepted` call, RPC возвращает ошибку.
+- Если caller или callee уже имеет активный `ringing` или `accepted` call, RPC возвращает ошибку.
 - Сервер использует transaction advisory locks для пары пользователей.
 - Старые `ringing` calls старше 60 секунд переводятся в `missed`.
+- Старые `accepted` calls старше 2 часов переводятся в `ended`, чтобы не держать busy-state навсегда.
 
 ### `update_call_status(p_call_id uuid, p_status text) returns calls`
+
+REST ответ является одним JSON object, не массивом, с теми же ключами, что `start_call`.
 
 Разрешенные переходы:
 
 - `ringing -> accepted`: только callee.
 - `ringing -> declined`: только callee.
 - `ringing -> ended`: caller или callee.
-- `accepted -> ended`: caller или callee.
-- `ringing -> missed`: caller или callee только после 60 секунд. Также сервер сам переводит старые звонки в `missed` при RPC и token flow.
+- `accepted -> ended`: caller или callee. App может вызывать это при sign out.
+- `ringing -> missed`: caller или callee только после 60 секунд. App может вызывать это после 60 секунд ожидания. Сервер также переводит старые звонки в `missed` при RPC и token flow.
 
 Запрещены произвольные изменения статуса и изменения чужих звонков.
 
@@ -160,6 +180,7 @@ Buckets private.
 ### `media`
 
 - Path: `<conversation UUID>/<auth uid>/<random filename>`.
+- В filename не допускается `/`.
 - Limit: 15 MB.
 - MIME: `image/jpeg`, `image/png`, `image/webp`, `audio/mpeg`, `audio/mp4`, `audio/aac`, `audio/wav`, `audio/x-m4a`, `audio/m4a`.
 - Read: authenticated member of conversation.
@@ -183,9 +204,12 @@ Content-Type: application/json
 { "expiresIn": 300 }
 ```
 
+Signed URL authorization идет через private bucket и RLS `select` на `storage.objects`. Пользователь должен быть участником conversation.
+
 ### `avatars`
 
 - Path: `<auth uid>/<random filename>`.
+- В filename не допускается `/`.
 - Limit: 5 MB.
 - MIME: `image/jpeg`, `image/png`, `image/webp`.
 - Read: any authenticated user.
@@ -214,32 +238,35 @@ Content-Type: application/json
 { "call_id": "<call uuid>" }
 ```
 
-Response:
+Success response has exactly these JSON keys for parent iOS compatibility:
 
 ```json
 {
   "token": "<livekit jwt>",
-  "url": "<LIVEKIT_URL>",
-  "room": "voice-<call uuid>",
-  "identity": "<auth uid>",
-  "expires_in": 300
+  "url": "<LIVEKIT_URL>"
 }
 ```
 
 Security:
 
 - Function is deployed with `--no-verify-jwt`, but explicitly validates `Authorization: Bearer` by `supabase.auth.getUser()`.
+- Expired Supabase access tokens are rejected with 401. iOS must refresh the Supabase session before requesting a LiveKit token.
 - Function uses anon key and the user Bearer token for data reads, so RLS is active.
 - Service role key is not used and is not returned.
 - Actor must be `caller_id` or `callee_id`.
 - Caller can get token while call is `ringing` or `accepted`.
 - Callee can get token only after call is `accepted`.
 - `ringing` call older than 60 seconds is rejected and cleanup RPC marks it as `missed`.
-- Room is deterministic: `voice-{call.id}`.
+- `accepted` call older than 2 hours is rejected and cleanup marks it as `ended`.
+- Room is deterministic inside the token grant: `voice-{call.id}`.
 - Grant is only for this room, join, subscribe and publish audio source. TTL is 300 seconds.
 - LiveKit server env only: `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_URL`.
 
 CORS is optional for native iOS. If `ALLOWED_ORIGINS` is set, browser origins outside the comma-separated list are rejected.
+
+### LiveKit revocation limitation
+
+DB cannot call LiveKit APIs when a call becomes `ended`, `declined` or `missed`. This backend does not add a separate LiveKit cleanup endpoint because that would broaden the app contract. A token issued before status change can remain usable until its short TTL expires. Current bound is 300 seconds. Accepted calls also auto-end after 2 hours to prevent permanent busy state.
 
 ## Auth и регистрация
 
@@ -266,8 +293,27 @@ Flow для iOS:
 ```bash
 supabase start
 supabase db reset
+DB_URL="postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/voice_security.sql
+```
+
+You can also run:
+
+```bash
 supabase test db
 ```
+
+## CI security workflow
+
+`.github/workflows/backend.yml` runs on backend path changes. It:
+
+1. Installs Supabase CLI.
+2. Installs `psql` client.
+3. Starts Supabase local services.
+4. Runs `supabase db reset`.
+5. Executes `supabase/tests/voice_security.sql` through `psql` with `ON_ERROR_STOP=1`.
+
+It uses only local demo credentials for the Supabase local database.
 
 ## Deploy setup
 
@@ -293,7 +339,8 @@ supabase functions deploy livekit-token --no-verify-jwt
 ## Security tests
 
 ```bash
-supabase test db
+supabase db reset
+psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -v ON_ERROR_STOP=1 -f supabase/tests/voice_security.sql
 ```
 
 Тесты проверяют:
@@ -301,9 +348,11 @@ supabase test db
 - Создание профиля из auth trigger.
 - Idempotent direct chat.
 - Запрет sender spoof.
+- Запрет attachment spoof.
 - Запрет чтения чужих messages через RLS.
-- Storage path checks для `media`.
-- Call transitions и busy protection.
+- Storage path checks для `media` и `avatars`.
+- Call transitions, response shape и busy protection.
+- `missed` после 60 секунд.
 
 ## Ограничения
 
@@ -312,8 +361,11 @@ supabase test db
 - Unread counters отсутствуют по контракту.
 - Group chats отсутствуют. `start_direct_chat` и calls рассчитаны на conversation с 2 участниками.
 - LiveKit token ограничивает publish audio source в JWT grant. iOS также должен публиковать только audio track.
+- LiveKit room не завершается через API при `ended`, `declined` или `missed`; токены ограничены TTL 300 секунд.
 - Нет credentials в репозитории. Все секреты задаются через Supabase secrets.
 
 ## Отличия от fixed contract
 
-Отличий нет. Backend сохраняет указанные table names, column names, RPC names, JSON keys, bucket path formats и LiveKit token flow.
+- LiveKit success response возвращает только `{ "token": string, "url": string }` для совместимости с parent iOS client. Room и identity остаются внутри JWT и не возвращаются.
+- Добавлен bounded timeout: `accepted` calls старше 2 часов переводятся в `ended`.
+- Остальные table names, column names, RPC names, JSON keys и bucket path formats сохранены.
