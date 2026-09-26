@@ -1,0 +1,85 @@
+name: iOS unsigned IPA
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    name: Build unsigned iOS app
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: bash scripts/select_xcode26.sh
+
+      - name: Install XcodeGen
+        run: |
+          set -euo pipefail
+          brew update
+          brew install xcodegen
+          xcodegen --version
+
+      - name: Generate app icon and Xcode project
+        run: |
+          set -euo pipefail
+          python3 scripts/generate_app_icon.py
+          xcodegen generate --spec project.yml
+
+      - name: Resolve Swift packages
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -resolvePackageDependencies \
+            -project VOICE.xcodeproj \
+            -scheme VOICE \
+            -clonedSourcePackagesDirPath DerivedData/SourcePackages
+
+      - name: Build Release for iPhoneOS
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project VOICE.xcodeproj \
+            -scheme VOICE \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log
+
+      - name: Package unsigned IPA
+        run: bash scripts/package_unsigned_ipa.sh
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: VOICE-unsigned-ipa
+          path: VOICE-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-diagnostics
+          path: |
+            build.log
+            xcode-version.txt
+            executable-file.txt
+            executable-arch.txt
+            VOICE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+            DerivedData/Logs/**
+          if-no-files-found: ignore
+          retention-days: 14
