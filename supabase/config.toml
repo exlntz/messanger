@@ -12,6 +12,8 @@ site_url = "http://localhost:3000"
 additional_redirect_urls = []
 jwt_expiry = 3600
 enable_signup = true
+
+[auth.email]
 enable_confirmations = true
 
 [functions.livekit-token]

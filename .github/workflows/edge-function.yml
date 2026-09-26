@@ -1,0 +1,40 @@
+name: Edge Function Typecheck
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "supabase/config.toml"
+      - "supabase/functions/livekit-token/**"
+      - ".github/workflows/edge-function.yml"
+  pull_request:
+    paths:
+      - "supabase/config.toml"
+      - "supabase/functions/livekit-token/**"
+      - ".github/workflows/edge-function.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  livekit-token:
+    name: livekit-token Deno check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          show-progress: false
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.1.10
+
+      - name: Check formatting
+        run: deno fmt --check supabase/functions/livekit-token
+
+      - name: Typecheck livekit-token
+        run: deno check --config supabase/functions/livekit-token/deno.json supabase/functions/livekit-token/index.ts

@@ -2,16 +2,14 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { AccessToken, TrackSource } from "npm:livekit-server-sdk@2.8.2";
 
-type TokenRequest = {
-  call_id?: string;
-};
+type CallStatus = "ringing" | "accepted" | "ended" | "declined" | "missed";
 
 type CallRow = {
   id: string;
   conversation_id: string;
   caller_id: string;
   callee_id: string;
-  status: "ringing" | "accepted" | "ended" | "declined" | "missed";
+  status: CallStatus;
   created_at: string;
   ended_at: string | null;
 };
@@ -33,11 +31,15 @@ function corsHeaders(origin: string | null): HeadersInit {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Headers": "authorization, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Vary": "Origin",
+    Vary: "Origin",
   };
 }
 
-function json(status: number, body: Record<string, unknown>, origin: string | null): Response {
+function json(
+  status: number,
+  body: Record<string, unknown>,
+  origin: string | null,
+): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
@@ -47,8 +49,31 @@ function json(status: number, body: Record<string, unknown>, origin: string | nu
   });
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getCallId(payload: unknown): string | null {
+  if (!isRecord(payload) || typeof payload.call_id !== "string") return null;
+  const callId = payload.call_id.trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(callId)) {
+    return null;
+  }
+  return callId;
+}
+
+function timestampMs(isoTimestamp: string): number | null {
+  const value = new Date(isoTimestamp).getTime();
+  return Number.isFinite(value) ? value : null;
+}
+
+function hasValidDates(call: CallRow): boolean {
+  if (timestampMs(call.created_at) === null) return false;
+  return call.ended_at === null || timestampMs(call.ended_at) !== null;
+}
+
 function ageMs(isoTimestamp: string): number {
-  return Date.now() - new Date(isoTimestamp).getTime();
+  return Date.now() - (timestampMs(isoTimestamp) ?? Date.now());
 }
 
 function isOldRinging(call: CallRow): boolean {
@@ -59,7 +84,7 @@ function isStaleAccepted(call: CallRow): boolean {
   return call.status === "accepted" && ageMs(call.created_at) > 2 * 60 * 60 * 1000;
 }
 
-serve(async (req) => {
+async function handleRequest(req: Request): Promise<Response> {
   const origin = req.headers.get("Origin");
 
   if (origin && allowedOrigins.length > 0 && !allowedOrigins.includes(origin)) {
@@ -94,27 +119,35 @@ serve(async (req) => {
     return json(401, { error: "Invalid Supabase session" }, origin);
   }
 
-  let payload: TokenRequest;
+  let payload: unknown;
   try {
     payload = await req.json();
   } catch (_error) {
     return json(400, { error: "Invalid JSON" }, origin);
   }
 
-  if (!payload.call_id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.call_id)) {
+  const callId = getCallId(payload);
+  if (!callId) {
     return json(400, { error: "call_id is required" }, origin);
   }
 
-  await userClient.rpc("expire_old_ringing_calls");
+  const { error: cleanupError } = await userClient.rpc("expire_old_ringing_calls");
+  if (cleanupError) {
+    return json(500, { error: "Call cleanup failed" }, origin);
+  }
 
   const { data: call, error: callError } = await userClient
     .from("calls")
     .select("id, conversation_id, caller_id, callee_id, status, created_at, ended_at")
-    .eq("id", payload.call_id)
+    .eq("id", callId)
     .single<CallRow>();
 
   if (callError || !call) {
     return json(404, { error: "Call was not found for this user" }, origin);
+  }
+
+  if (!hasValidDates(call)) {
+    return json(500, { error: "Call data is invalid" }, origin);
   }
 
   const userId = authData.user.id;
@@ -157,4 +190,14 @@ serve(async (req) => {
 
   // Parent iOS client expects exactly these success keys.
   return json(200, { token, url: livekitUrl }, origin);
+}
+
+serve(async (req) => {
+  const origin = req.headers.get("Origin");
+
+  try {
+    return await handleRequest(req);
+  } catch (_error) {
+    return json(500, { error: "Internal server error" }, origin);
+  }
 });
