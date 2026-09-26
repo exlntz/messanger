@@ -3,8 +3,7 @@
 -- message attachment ownership, stale calls and policy recursion safety.
 
 create schema if not exists private;
-revoke all on schema private from public, anon;
-grant usage on schema private to authenticated;
+revoke all on schema private from public, anon, authenticated;
 
 create or replace function private.is_uuid_text(value text)
 returns boolean
@@ -466,7 +465,7 @@ for delete to authenticated using (bucket_id = 'avatars' and
 private.is_avatar_path_for_user(name, auth.uid()));
 
 -- Keep only the public contract callable through REST. Private helpers stay
--- outside exposed schemas.
+-- hidden from direct schema access.
 revoke all on function public.is_conversation_member(uuid, uuid) from public,
 anon, authenticated;
 revoke all on function public.is_call_actor(uuid, uuid) from public, anon,
@@ -483,6 +482,10 @@ revoke all on all functions in schema private from public, anon, authenticated;
 grant execute on function public.start_direct_chat(uuid) to authenticated;
 grant execute on function public.conversation_list() to authenticated;
 grant execute on function public.start_call(uuid) to authenticated;
-grant execute on function public.update_call_status(uuid, text) to
-authenticated;
+grant execute on function public.update_call_status(uuid, text) to authenticated;
 grant execute on function public.expire_old_ringing_calls() to authenticated;
+
+grant execute on function private.is_conversation_member(uuid, uuid) to authenticated;
+grant execute on function private.is_media_path(text, uuid) to authenticated;
+grant execute on function private.is_media_path_for_user(text, uuid, uuid) to authenticated;
+grant execute on function private.is_avatar_path_for_user(text, uuid) to authenticated;
