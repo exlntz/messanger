@@ -290,8 +290,12 @@ struct ConversationRow: View {
         .contentShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
     }
 
+    private var normalizedLastKind: String {
+        conversation.lastKind?.lowercased() ?? ""
+    }
+
     private var lastKindImage: String? {
-        switch conversation.lastKind.lowercased() {
+        switch normalizedLastKind {
         case "image", "photo":
             "photo"
         case "voice":
@@ -307,7 +311,7 @@ struct ConversationRow: View {
             return lastMessage
         }
 
-        switch conversation.lastKind.lowercased() {
+        switch normalizedLastKind {
         case "image", "photo":
             return "Фото"
         case "voice":
@@ -605,14 +609,16 @@ private struct RecentCallRow: View {
     }
 
     private var callTimestamp: String {
-        let source = record.endedAt.voiceTrimmed.isEmpty ? record.createdAt : record.endedAt
+        let endedAtText = record.endedAt ?? ""
+        let source = endedAtText.voiceTrimmed.isEmpty ? record.createdAt : endedAtText
         return source.voiceListTime
     }
 
     private var durationText: String? {
         guard
+            let endedAtText = record.endedAt,
             let startedAt = record.createdAt.voiceDate,
-            let endedAt = record.endedAt.voiceDate,
+            let endedAt = endedAtText.voiceDate,
             endedAt > startedAt
         else {
             return nil
@@ -629,6 +635,6 @@ private struct RecentCallRow: View {
 
     private var isOutgoing: Bool {
         guard let currentUserID else { return false }
-        return record.callerID.lowercased() == currentUserID.uuidString.lowercased()
+        return record.callerID == currentUserID
     }
 }

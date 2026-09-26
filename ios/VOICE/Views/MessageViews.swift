@@ -424,6 +424,16 @@ private final class VoicePlaybackController: ObservableObject {
     }
 
     deinit {
-        teardown()
+        player?.pause()
+        if let timeObserver {
+            player?.removeTimeObserver(timeObserver)
+        }
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+        }
+        if let failureObserver {
+            NotificationCenter.default.removeObserver(failureObserver)
+        }
+        statusObservation?.invalidate()
     }
 }
