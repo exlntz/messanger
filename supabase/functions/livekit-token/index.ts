@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-import { AccessToken, TrackSource } from "npm:livekit-server-sdk@2.8.2";
+import { AccessToken, TrackSource } from "npm:livekit-server-sdk@2.8.1";
 
 type CallStatus = "ringing" | "accepted" | "ended" | "declined" | "missed";
 
