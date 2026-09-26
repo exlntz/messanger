@@ -31,11 +31,8 @@ targets:
           - Info.plist
           - Assets.xcassets
           - "**/*.md"
-          - "**/*.json"
-    resources:
       - path: ios/VOICE/Assets.xcassets
-    info:
-      path: ios/VOICE/Info.plist
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.exlntz.voice
