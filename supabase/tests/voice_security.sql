@@ -4,7 +4,7 @@
 begin;
 
 create extension if not exists pgtap;
-select plan(27);
+select plan(29);
 
 insert into auth.users(id, email, encrypted_password, email_confirmed_at, raw_user_meta_data)
 values
@@ -46,13 +46,15 @@ $$, '42501', null, 'sender spoof is rejected');
 
 select throws_ok($$
   insert into public.messages(conversation_id, sender_id, kind, attachment_path)
-  select ab_conversation_id, '00000000-0000-0000-0000-0000000000a1', 'image', ab_conversation_id::text || '/00000000-0000-0000-0000-0000000000b2/file.jpg'
+  select ab_conversation_id, '00000000-0000-0000-0000-0000000000a1', 'image',
+    ab_conversation_id::text || '/00000000-0000-0000-0000-0000000000b2/file.jpg'
   from test_ids
 $$, '42501', null, 'message cannot reference peer-owned media path');
 
 select lives_ok($$
   insert into public.messages(conversation_id, sender_id, kind, attachment_path)
-  select ab_conversation_id, '00000000-0000-0000-0000-0000000000a1', 'image', ab_conversation_id::text || '/00000000-0000-0000-0000-0000000000a1/file.jpg'
+  select ab_conversation_id, '00000000-0000-0000-0000-0000000000a1', 'image',
+    ab_conversation_id::text || '/00000000-0000-0000-0000-0000000000a1/file.jpg'
   from test_ids
 $$, 'message can reference own media path');
 
@@ -80,6 +82,26 @@ select throws_ok($$
   select 'media', ab_conversation_id::text || '/00000000-0000-0000-0000-0000000000b2/file.jpg', '00000000-0000-0000-0000-0000000000a1', '{}'::jsonb
   from test_ids
 $$, '42501', null, 'member cannot upload media under peer uid segment');
+
+reset role;
+insert into storage.objects(bucket_id, name, owner, metadata)
+select 'media', ab_conversation_id::text || '/00000000-0000-0000-0000-0000000000b2/file.jpg', '00000000-0000-0000-0000-0000000000b2', '{}'::jsonb
+from test_ids;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000a1', true);
+select set_config('request.jwt.claim.role', 'authenticated', true);
+
+select is(
+  (
+    select count(*)
+    from storage.objects
+    where bucket_id = 'media'
+      and name like (select ab_conversation_id::text || '/%' from test_ids)
+  ),
+  2::bigint,
+  'conversation member can read peer media in same conversation'
+);
 
 select lives_ok($$
   insert into storage.objects(bucket_id, name, owner, metadata)
@@ -136,6 +158,16 @@ select is((select status from public.update_call_status((select id from old_call
 
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000c3', true);
 select is((select count(*) from public.messages), 0::bigint, 'non-member cannot read messages through RLS');
+select is(
+  (
+    select count(*)
+    from storage.objects
+    where bucket_id = 'media'
+      and name like (select ab_conversation_id::text || '/%' from test_ids)
+  ),
+  0::bigint,
+  'non-member cannot read conversation media through RLS'
+);
 select throws_ok($$
   insert into storage.objects(bucket_id, name, owner, metadata)
   select 'media', ab_conversation_id::text || '/00000000-0000-0000-0000-0000000000c3/file.jpg', '00000000-0000-0000-0000-0000000000c3', '{}'::jsonb
@@ -147,6 +179,5 @@ $$, '42501', null, 'non-call actor cannot update call status');
 
 select hasnt_function('public', 'is_conversation_member', array['uuid', 'uuid'], 'legacy membership helper is not callable through exposed contract');
 select ok(true, 'SQL tests executed through psql-compatible pgtap');
-
 select * from finish();
 rollback;
