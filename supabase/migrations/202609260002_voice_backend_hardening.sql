@@ -90,6 +90,7 @@ set search_path = public
 as $$
 declare
   affected integer;
+  accepted_affected integer;
 begin
   update public.calls as c
   set status = 'missed', ended_at = now()
@@ -103,8 +104,8 @@ begin
   where c.status = 'accepted'
     and c.created_at < now() - interval '2 hours';
 
-  get diagnostics affected = affected + row_count;
-  return affected;
+  get diagnostics accepted_affected = row_count;
+  return affected + accepted_affected;
 end;
 $$;
 
