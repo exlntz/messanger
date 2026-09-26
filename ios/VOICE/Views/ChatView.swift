@@ -5,6 +5,7 @@ import UIKit
 struct ChatView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let conversation: ConversationSummary
 
@@ -13,114 +14,156 @@ struct ChatView: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var isSending = false
     @State private var isSendingPhoto = false
+    @State private var isSendingVoice = false
     @State private var didInitialScroll = false
     @FocusState private var isFocused: Bool
 
     private var messages: [ChatMessage] {
         store.messages
             .filter { $0.conversationID == conversation.id }
-            .sorted { ($0.createdAt.voiceDate ?? .distantPast) < ($1.createdAt.voiceDate ?? .distantPast) }
+            .sorted {
+                ($0.createdAt.voiceDate ?? .distantPast) < ($1.createdAt.voiceDate ?? .distantPast)
+            }
+    }
+
+    private var recordingDisabled: Bool {
+        store.activeCall != nil || isSendingPhoto || isSendingVoice
+    }
+
+    private var callDisabled: Bool {
+        recorder.isRecording || isSendingVoice || store.activeCall != nil
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            messageList
-            composeBar
-        }
-        .background(Color(.systemGroupedBackground))
-        .navigationTitle(conversation.displayName)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                HStack(spacing: 8) {
-                    AvatarView(path: conversation.avatarPath, displayName: conversation.displayName, size: 32)
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(conversation.displayName)
-                            .font(.headline)
-                            .lineLimit(1)
-                        Text("@\(conversation.username)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    Task { await store.startCall(conversationID: conversation.id) }
-                } label: {
-                    Image(systemName: "phone")
-                }
-                .accessibilityLabel("Позвонить")
-            }
-        }
-        .task(id: conversation.id) {
-            await store.loadMessages(conversationID: conversation.id)
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
-                Task { await store.loadMessages(conversationID: conversation.id) }
-            }
-        }
-        .onChange(of: photoItem) { _, newValue in
-            guard let newValue else { return }
-            Task { await sendPhoto(newValue) }
-        }
-    }
-
-    private var messageList: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    if store.isLoading && messages.isEmpty {
-                        ProgressView("Загрузка сообщений")
-                            .padding(.top, 40)
-                    } else if messages.isEmpty {
-                        VOICEEmptyState(systemImage: "bubble.left", title: "Нет сообщений", message: "Напишите первое сообщение. Демонстрационные сообщения не создаются.")
-                            .frame(minHeight: 420)
-                    } else {
-                        ForEach(messages) { message in
-                            MessageBubbleView(message: message, isOutgoing: message.senderID == store.session?.user.id)
-                                .id(message.id)
+            ZStack(alignment: .bottom) {
+                VoiceBackground()
+                messageList(proxy: proxy)
+            }
+            .navigationTitle(conversation.displayName)
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                composeBar
+            }
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 8) {
+                        AvatarView(path: conversation.avatarPath, displayName: conversation.displayName, size: 32)
+
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(conversation.displayName)
+                                .font(.headline)
+                                .lineLimit(1)
+
+                            Text("@\(conversation.username)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 12)
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        Task { await store.startCall(conversationID: conversation.id) }
+                    } label: {
+                        Image(systemName: "phone")
+                    }
+                    .disabled(callDisabled)
+                    .accessibilityLabel("Позвонить")
+                }
             }
-            .scrollDismissesKeyboard(.interactively)
-            .onChange(of: messages.count) { _, _ in
-                scrollToBottom(proxy: proxy, animated: didInitialScroll)
-                didInitialScroll = true
+            .task(id: conversation.id) {
+                await store.loadMessages(conversationID: conversation.id)
             }
-            .onAppear {
-                scrollToBottom(proxy: proxy, animated: false)
-                didInitialScroll = true
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active {
+                    Task { await store.loadMessages(conversationID: conversation.id) }
+                } else {
+                    cancelRecorderIfNeeded()
+                }
             }
+            .onChange(of: store.activeCall != nil) { _, hasActiveCall in
+                if hasActiveCall {
+                    isFocused = false
+                    cancelRecorderIfNeeded()
+                }
+            }
+            .onChange(of: photoItem) { _, newValue in
+                guard let newValue else { return }
+                Task { await sendPhoto(newValue) }
+            }
+            .onDisappear {
+                isFocused = false
+                cancelRecorderIfNeeded()
+                store.closeConversation(conversation.id)
+            }
+        }
+    }
+
+    private func messageList(proxy: ScrollViewProxy) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 10) {
+                if store.isLoading && messages.isEmpty {
+                    ProgressView("Загрузка сообщений")
+                        .padding(.top, 40)
+                } else if messages.isEmpty {
+                    VOICEEmptyState(
+                        systemImage: "bubble.left",
+                        title: "Нет сообщений",
+                        message: "Напишите первое сообщение. Демонстрационные сообщения не создаются."
+                    )
+                    .frame(minHeight: 420)
+                } else {
+                    ForEach(messages) { message in
+                        MessageBubbleView(
+                            message: message,
+                            isOutgoing: message.senderID == store.session?.user.id
+                        )
+                        .id(message.id)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .onChange(of: messages.count) { _, _ in
+            scrollToBottom(proxy: proxy, animated: didInitialScroll)
+            didInitialScroll = true
+        }
+        .onAppear {
+            scrollToBottom(proxy: proxy, animated: false)
+            didInitialScroll = true
         }
     }
 
     private var composeBar: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             if recorder.isRecording {
                 HStack(spacing: 12) {
                     Image(systemName: "record.circle.fill")
                         .foregroundStyle(.red)
+
                     Text("Запись \(formatDuration(recorder.elapsed))")
                         .font(.subheadline.monospacedDigit())
+
                     Spacer()
+
                     Button("Отмена", role: .destructive) {
                         recorder.cancel()
                     }
+
                     Button("Отправить") {
                         Task { await stopAndSendVoice() }
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(isSendingVoice)
                 }
-                .padding(.horizontal, 12)
             }
 
-            HStack(alignment: .bottom, spacing: 8) {
+            HStack(alignment: .bottom, spacing: 10) {
                 PhotosPicker(selection: $photoItem, matching: .images) {
                     Image(systemName: isSendingPhoto ? "hourglass" : "photo")
                         .font(.title3)
@@ -135,7 +178,7 @@ struct ChatView: View {
                     .focused($isFocused)
                     .disabled(recorder.isRecording)
 
-                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if text.voiceTrimmed.isEmpty {
                     Button {
                         Task { await toggleRecording() }
                     } label: {
@@ -144,6 +187,7 @@ struct ChatView: View {
                             .frame(width: 38, height: 38)
                             .foregroundStyle(recorder.isRecording ? .red : .accentColor)
                     }
+                    .disabled(recordingDisabled)
                     .accessibilityLabel(recorder.isRecording ? "Остановить запись" : "Записать голос")
                 } else {
                     Button {
@@ -157,29 +201,37 @@ struct ChatView: View {
                     .accessibilityLabel("Отправить сообщение")
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 10)
         }
-        .background(.bar)
+        .padding(12)
+        .voiceGlass(cornerRadius: 28)
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy, animated: Bool) {
         guard let last = messages.last else { return }
-        let action = { proxy.scrollTo(last.id, anchor: .bottom) }
-        if animated {
-            withAnimation(.snappy) { action() }
+        let action = {
+            proxy.scrollTo(last.id, anchor: .bottom)
+        }
+
+        if animated && !reduceMotion {
+            withAnimation(.snappy(duration: 0.24)) {
+                action()
+            }
         } else {
             action()
         }
     }
 
     private func sendText() async {
-        let draft = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let draft = text.voiceTrimmed
         guard !draft.isEmpty, !isSending else { return }
         isSending = true
         let sent = await store.sendText(draft, conversationID: conversation.id)
-        if sent { text = "" }
+        if sent {
+            text = ""
+        }
         isSending = false
     }
 
@@ -190,8 +242,13 @@ struct ChatView: View {
             isSendingPhoto = false
             photoItem = nil
         }
+
         do {
-            guard let data = try await item.loadTransferable(type: Data.self), let image = UIImage(data: data), let jpeg = image.voiceJPEGData() else {
+            guard
+                let data = try await item.loadTransferable(type: Data.self),
+                let image = UIImage(data: data),
+                let jpeg = image.voiceJPEGData()
+            else {
                 store.error = "Не удалось подготовить фото."
                 return
             }
@@ -202,6 +259,13 @@ struct ChatView: View {
     }
 
     private func toggleRecording() async {
+        guard !recordingDisabled else {
+            if store.activeCall != nil {
+                store.error = "Во время звонка запись недоступна."
+            }
+            return
+        }
+
         do {
             if recorder.isRecording {
                 await stopAndSendVoice()
@@ -214,12 +278,36 @@ struct ChatView: View {
     }
 
     private func stopAndSendVoice() async {
+        guard !isSendingVoice else { return }
+        isSendingVoice = true
+
         do {
             let result = try recorder.stop()
-            _ = await store.sendVoice(fileURL: result.url, duration: result.duration, conversationID: conversation.id)
+            let fileURL = result.url
+            defer {
+                cleanupTemporaryFile(at: fileURL)
+                isSendingVoice = false
+            }
+
+            _ = await store.sendVoice(
+                fileURL: fileURL,
+                duration: result.duration,
+                conversationID: conversation.id
+            )
         } catch {
+            isSendingVoice = false
             store.error = error.localizedDescription
         }
+    }
+
+    private func cancelRecorderIfNeeded() {
+        if recorder.isRecording {
+            recorder.cancel()
+        }
+    }
+
+    private func cleanupTemporaryFile(at url: URL) {
+        try? FileManager.default.removeItem(at: url)
     }
 
     private func formatDuration(_ seconds: Double) -> String {

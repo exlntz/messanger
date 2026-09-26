@@ -1,35 +1,99 @@
 import SwiftUI
-import PhotosUI
 import UIKit
+
+struct VoiceBackground: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+
+            VOICEGradient()
+                .opacity(reduceTransparency ? 0.12 : 0.2)
+
+            RadialGradient(
+                colors: [
+                    .white.opacity(reduceTransparency ? 0.06 : 0.16),
+                    .clear
+                ],
+                center: .topLeading,
+                startRadius: 24,
+                endRadius: 320
+            )
+            .ignoresSafeArea()
+
+            LinearGradient(
+                colors: [
+                    .clear,
+                    .black.opacity(0.04)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .ignoresSafeArea()
+    }
+}
 
 struct VOICEGradient: View {
     var body: some View {
         LinearGradient(
-            colors: [Color.accentColor.opacity(0.95), Color.purple.opacity(0.75)],
+            colors: [
+                Color.accentColor.opacity(0.95),
+                Color.purple.opacity(0.75)
+            ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
     }
 }
 
-extension View {
-    @ViewBuilder
-    func voiceGlass(cornerRadius: CGFloat = 24) -> some View {
-        if #available(iOS 26.0, *) {
-            self.glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+private struct VoiceGlassModifier: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content
+                .background(Color(.secondarySystemBackground), in: shape)
+                .overlay(border)
+        } else if #available(iOS 26.0, *) {
+            content
+                .glassEffect(.regular, in: shape)
+                .overlay(border)
         } else {
-            self.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            content
+                .background(.ultraThinMaterial, in: shape)
+                .overlay(border)
         }
+    }
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    }
+
+    private var border: some View {
+        shape
+            .stroke(.white.opacity(reduceTransparency ? 0.08 : 0.18), lineWidth: 1)
+    }
+}
+
+extension View {
+    func voiceGlass(cornerRadius: CGFloat = 24) -> some View {
+        modifier(VoiceGlassModifier(cornerRadius: cornerRadius))
     }
 
     func voiceCard(cornerRadius: CGFloat = 24) -> some View {
         self
             .padding(16)
             .voiceGlass(cornerRadius: cornerRadius)
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(.white.opacity(0.18), lineWidth: 1)
-            }
+    }
+
+    func voiceRowCard(cornerRadius: CGFloat = 24, padding: CGFloat = 14) -> some View {
+        self
+            .padding(padding)
+            .voiceGlass(cornerRadius: cornerRadius)
     }
 }
 
@@ -42,22 +106,30 @@ enum VoiceAppearance: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .system: "Системная"
-        case .light: "Светлая"
-        case .dark: "Тёмная"
+        case .system:
+            "Системная"
+        case .light:
+            "Светлая"
+        case .dark:
+            "Тёмная"
         }
     }
 
     var colorScheme: ColorScheme? {
         switch self {
-        case .system: nil
-        case .light: .light
-        case .dark: .dark
+        case .system:
+            nil
+        case .light:
+            .light
+        case .dark:
+            .dark
         }
     }
 }
 
 struct VOICEPrimaryButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.headline)
@@ -69,7 +141,8 @@ struct VOICEPrimaryButtonStyle: ButtonStyle {
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .opacity(configuration.isPressed ? 0.78 : 1)
             }
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.985 : 1))
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: configuration.isPressed)
     }
 }
 
@@ -94,14 +167,16 @@ struct VOICEEmptyState: View {
                 .font(.system(size: 44, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
+
             Text(title)
                 .font(.title3.bold())
+
             Text(message)
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 260, maxHeight: .infinity)
         .padding(32)
     }
 }
@@ -118,7 +193,16 @@ struct AvatarView: View {
     var body: some View {
         ZStack {
             Circle()
-                .fill(.thinMaterial)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.accentColor.opacity(0.9),
+                            Color.purple.opacity(0.72)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
 
             if let signedURL {
                 AsyncImage(url: signedURL) { phase in
@@ -131,6 +215,7 @@ struct AvatarView: View {
                         initials
                     case .empty:
                         ProgressView()
+                            .tint(.white)
                     @unknown default:
                         initials
                     }
@@ -155,20 +240,26 @@ struct AvatarView: View {
     private var initials: some View {
         Text(initialText)
             .font(.system(size: max(12, size * 0.36), weight: .bold, design: .rounded))
-            .foregroundStyle(.primary)
+            .foregroundStyle(.white)
     }
 
     private var initialText: String {
-        let source = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = displayName.voiceTrimmed
         return source.first.map { String($0).uppercased() } ?? "V"
     }
 }
 
 extension String {
+    var voiceTrimmed: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var voiceDate: Date? {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: self) { return date }
+        if let date = fractional.date(from: self) {
+            return date
+        }
         return ISO8601DateFormatter().date(from: self)
     }
 
@@ -194,13 +285,27 @@ extension String {
         }
         return formatter.string(from: date)
     }
+
+    var voiceFullTimestamp: String {
+        guard let date = voiceDate else { return self }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ru_RU")
+        formatter.doesRelativeDateFormatting = true
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
 }
 
 extension UIImage {
     func voiceJPEGData(maxDimension: CGFloat = 1600, compression: CGFloat = 0.82) -> Data? {
         let maxSide = max(size.width, size.height)
-        guard maxSide > 0 else { return jpegData(compressionQuality: compression) }
-        guard maxSide > maxDimension else { return jpegData(compressionQuality: compression) }
+        guard maxSide > 0 else {
+            return jpegData(compressionQuality: compression)
+        }
+        guard maxSide > maxDimension else {
+            return jpegData(compressionQuality: compression)
+        }
 
         let scale = maxDimension / maxSide
         let targetSize = CGSize(width: size.width * scale, height: size.height * scale)

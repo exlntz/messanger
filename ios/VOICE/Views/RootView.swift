@@ -12,9 +12,6 @@ struct RootView: View {
                 AuthView()
             } else {
                 MainView()
-                    .task {
-                        await store.refreshConversations()
-                    }
             }
         }
         .preferredColorScheme(currentAppearance.colorScheme)
@@ -22,19 +19,12 @@ struct RootView: View {
             CallView()
                 .environmentObject(store)
         }
-        .alert("Ошибка", isPresented: errorPresentation) {
+        .alert(alertTitle, isPresented: alertPresentation) {
             Button("ОК", role: .cancel) {
-                store.error = nil
+                dismissAlert()
             }
         } message: {
-            Text(store.error ?? "Неизвестная ошибка")
-        }
-        .alert("VOICE", isPresented: noticePresentation) {
-            Button("ОК", role: .cancel) {
-                store.notice = nil
-            }
-        } message: {
-            Text(store.notice ?? "")
+            Text(alertMessage)
         }
     }
 
@@ -42,20 +32,21 @@ struct RootView: View {
         VoiceAppearance(rawValue: appearance) ?? .system
     }
 
-    private var errorPresentation: Binding<Bool> {
-        Binding(
-            get: { store.error != nil },
-            set: { isPresented in
-                if !isPresented { store.error = nil }
-            }
-        )
+    private var alertTitle: String {
+        store.error != nil ? "Ошибка" : "VOICE"
     }
 
-    private var noticePresentation: Binding<Bool> {
+    private var alertMessage: String {
+        store.error ?? store.notice ?? "Неизвестное сообщение"
+    }
+
+    private var alertPresentation: Binding<Bool> {
         Binding(
-            get: { store.notice != nil },
+            get: { store.error != nil || store.notice != nil },
             set: { isPresented in
-                if !isPresented { store.notice = nil }
+                if !isPresented {
+                    dismissAlert()
+                }
             }
         )
     }
@@ -68,5 +59,13 @@ struct RootView: View {
                 Task { await store.endCall() }
             }
         )
+    }
+
+    private func dismissAlert() {
+        if store.error != nil {
+            store.error = nil
+        } else {
+            store.notice = nil
+        }
     }
 }

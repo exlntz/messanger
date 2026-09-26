@@ -14,10 +14,7 @@ struct AuthView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(.systemBackground)
-                VOICEGradient()
-                    .opacity(0.14)
-                    .ignoresSafeArea()
+                VoiceBackground()
 
                 ScrollView {
                     VStack(spacing: 22) {
@@ -40,6 +37,7 @@ struct AuthView: View {
                         VStack(spacing: 14) {
                             TextField("Email", text: $email)
                                 .keyboardType(.emailAddress)
+                                .textInputAutocapitalization(.never)
                                 .textContentType(.emailAddress)
                                 .textFieldStyle(VOICETextFieldStyle())
 
@@ -51,6 +49,7 @@ struct AuthView: View {
                                 TextField("Username", text: $username)
                                     .textContentType(.username)
                                     .textFieldStyle(VOICETextFieldStyle())
+
                                 TextField("Имя в профиле", text: $displayName)
                                     .textContentType(.name)
                                     .textInputAutocapitalization(.words)
@@ -61,11 +60,14 @@ struct AuthView: View {
                         .voiceCard()
 
                         if didRegister {
-                            Label("Проверьте email и подтвердите регистрацию. После подтверждения войдите с email и паролем.", systemImage: "envelope.badge")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .voiceCard(cornerRadius: 18)
+                            Label(
+                                "Проверьте email и подтвердите регистрацию. После подтверждения войдите с email и паролем.",
+                                systemImage: "envelope.badge"
+                            )
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .voiceCard(cornerRadius: 18)
                         }
 
                         Button {
@@ -94,11 +96,12 @@ struct AuthView: View {
     private var canSubmit: Bool {
         let emailReady = email.contains("@") && email.contains(".")
         let passwordReady = password.count >= 8
+
         switch mode {
         case .login:
-            return emailReady && passwordReady
+            emailReady && passwordReady
         case .register:
-            return emailReady && passwordReady && !username.trimmed.isEmpty && !displayName.trimmed.isEmpty
+            emailReady && passwordReady && !username.voiceTrimmed.isEmpty && !displayName.voiceTrimmed.isEmpty
         }
     }
 
@@ -106,21 +109,23 @@ struct AuthView: View {
         guard canSubmit, !isWorking else { return }
         isWorking = true
         didRegister = false
+
         switch mode {
         case .login:
-            await store.signIn(email: email.trimmed, password: password)
+            await store.signIn(email: email.voiceTrimmed, password: password)
         case .register:
             await store.signUp(
-                email: email.trimmed,
+                email: email.voiceTrimmed,
                 password: password,
-                username: username.trimmed,
-                displayName: displayName.trimmed
+                username: username.voiceTrimmed,
+                displayName: displayName.voiceTrimmed
             )
             if store.error == nil {
                 didRegister = true
                 mode = .login
             }
         }
+
         isWorking = false
     }
 }
@@ -133,12 +138,10 @@ private enum AuthMode: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .login: "Вход"
-        case .register: "Регистрация"
+        case .login:
+            "Вход"
+        case .register:
+            "Регистрация"
         }
     }
-}
-
-private extension String {
-    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
 }

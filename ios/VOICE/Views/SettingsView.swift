@@ -20,12 +20,17 @@ struct SettingsView: View {
             appearanceSection
             accountSection
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(VoiceBackground())
         .navigationTitle("Профиль")
         .navigationBarTitleDisplayMode(.inline)
         .task {
             loadProfile()
         }
-        .onChange(of: store.profile) { _, _ in loadProfile() }
+        .onChange(of: store.profile) { _, _ in
+            loadProfile()
+        }
         .onChange(of: avatarItem) { _, item in
             guard let item else { return }
             Task { await loadAvatar(item) }
@@ -34,7 +39,7 @@ struct SettingsView: View {
             Button("Сбросить", role: .destructive) {
                 Task { await store.resetConfiguration() }
             }
-            Button("Отмена", role: .cancel) { }
+            Button("Отмена", role: .cancel) {}
         } message: {
             Text("После сброса нужно снова ввести Supabase и LiveKit.")
         }
@@ -54,6 +59,7 @@ struct SettingsView: View {
                         } else {
                             AvatarView(path: store.profile?.avatarPath, displayName: displayName, size: 96)
                         }
+
                         Image(systemName: "camera.fill")
                             .font(.caption.bold())
                             .foregroundStyle(.white)
@@ -68,6 +74,7 @@ struct SettingsView: View {
                         .textContentType(.name)
                         .textInputAutocapitalization(.words)
                         .textFieldStyle(VOICETextFieldStyle())
+
                     TextField("Username", text: $username)
                         .textContentType(.username)
                         .textFieldStyle(VOICETextFieldStyle())
@@ -84,10 +91,11 @@ struct SettingsView: View {
                     }
                 }
                 .buttonStyle(VOICEPrimaryButtonStyle())
-                .disabled(isSaving || displayName.trimmed.isEmpty || username.trimmed.isEmpty)
-                .opacity(displayName.trimmed.isEmpty || username.trimmed.isEmpty ? 0.55 : 1)
+                .disabled(isSaving || displayName.voiceTrimmed.isEmpty || username.voiceTrimmed.isEmpty)
+                .opacity(displayName.voiceTrimmed.isEmpty || username.voiceTrimmed.isEmpty ? 0.55 : 1)
             }
             .padding(.vertical, 8)
+            .listRowBackground(Color.clear)
         } header: {
             Text("Аккаунт")
         } footer: {
@@ -104,6 +112,7 @@ struct SettingsView: View {
                     Text(item.title).tag(item.rawValue)
                 }
             }
+            .listRowBackground(Color.clear)
         }
     }
 
@@ -112,9 +121,12 @@ struct SettingsView: View {
             Button("Выйти") {
                 Task { await store.signOut() }
             }
+            .listRowBackground(Color.clear)
+
             Button("Сбросить сервер", role: .destructive) {
                 showsResetConfirmation = true
             }
+            .listRowBackground(Color.clear)
         }
     }
 
@@ -126,10 +138,15 @@ struct SettingsView: View {
 
     private func loadAvatar(_ item: PhotosPickerItem) async {
         do {
-            guard let data = try await item.loadTransferable(type: Data.self), let image = UIImage(data: data), let jpeg = image.voiceJPEGData(maxDimension: 900, compression: 0.84) else {
+            guard
+                let data = try await item.loadTransferable(type: Data.self),
+                let image = UIImage(data: data),
+                let jpeg = image.voiceJPEGData(maxDimension: 900, compression: 0.84)
+            else {
                 store.error = "Не удалось подготовить аватар."
                 return
             }
+
             avatarData = jpeg
             avatarPreview = UIImage(data: jpeg)
         } catch {
@@ -140,15 +157,15 @@ struct SettingsView: View {
     private func saveProfile() async {
         guard !isSaving else { return }
         isSaving = true
-        let saved = await store.updateProfile(displayName: displayName.trimmed, username: username.trimmed, avatarData: avatarData)
+        let saved = await store.updateProfile(
+            displayName: displayName.voiceTrimmed,
+            username: username.voiceTrimmed,
+            avatarData: avatarData
+        )
         if saved {
             avatarData = nil
             avatarItem = nil
         }
         isSaving = false
     }
-}
-
-private extension String {
-    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
 }

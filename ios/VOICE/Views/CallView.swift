@@ -5,8 +5,7 @@ struct CallView: View {
 
     var body: some View {
         ZStack {
-            VOICEGradient()
-                .ignoresSafeArea()
+            VoiceBackground()
             Color.black.opacity(0.18)
                 .ignoresSafeArea()
 
@@ -16,16 +15,21 @@ struct CallView: View {
                 AvatarView(path: peerAvatarPath, displayName: peerName, size: 132)
                     .environmentObject(store)
 
-                VStack(spacing: 8) {
+                VStack(spacing: 12) {
                     Text(peerName)
                         .font(.largeTitle.bold())
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
+
                     Text(statusText)
                         .font(.title3)
                         .foregroundStyle(.white.opacity(0.82))
                         .multilineTextAlignment(.center)
                 }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 18)
+                .voiceGlass(cornerRadius: 28)
+                .padding(.horizontal, 24)
 
                 Spacer()
 
@@ -34,21 +38,30 @@ struct CallView: View {
                         CallCircleButton(title: "Отклонить", systemImage: "phone.down.fill", color: .red) {
                             Task { await store.declineCall() }
                         }
+
                         CallCircleButton(title: "Ответить", systemImage: "phone.fill", color: .green) {
                             Task { await store.acceptCall() }
                         }
                     } else {
-                        CallCircleButton(title: store.isMuted ? "Включить" : "Без звука", systemImage: store.isMuted ? "mic.slash.fill" : "mic.fill", color: .white.opacity(0.22)) {
+                        CallCircleButton(
+                            title: store.isMuted ? "Включить" : "Без звука",
+                            systemImage: store.isMuted ? "mic.slash.fill" : "mic.fill",
+                            color: .white.opacity(0.24)
+                        ) {
                             Task { await store.toggleMute() }
                         }
+
                         CallCircleButton(title: "Завершить", systemImage: "phone.down.fill", color: .red) {
                             Task { await store.endCall() }
                         }
                     }
                 }
-                .padding(.bottom, 44)
+                .padding(18)
+                .voiceGlass(cornerRadius: 32)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 28)
             }
-            .padding(24)
+            .padding(.top, 32)
         }
         .interactiveDismissDisabled(store.activeCall != nil)
     }
@@ -70,7 +83,9 @@ struct CallView: View {
     }
 
     private var isIncomingRinging: Bool {
-        guard let call = store.activeCall, let currentUserID = store.session?.user.id else { return false }
+        guard let call = store.activeCall, let currentUserID = store.session?.user.id else {
+            return false
+        }
         return call.calleeID == currentUserID && call.status.lowercased() == "ringing"
     }
 
@@ -78,12 +93,20 @@ struct CallView: View {
         if !store.callConnectionLabel.isEmpty {
             return store.callConnectionLabel
         }
-        guard let status = store.activeCall?.status.lowercased() else { return "Звонок" }
+
+        guard let status = store.activeCall?.status.lowercased() else {
+            return "Звонок"
+        }
+
         switch status {
-        case "ringing": return isIncomingRinging ? "Входящий звонок" : "Вызов"
-        case "active", "connected": return "На связи"
-        case "ended": return "Завершено"
-        default: return "Соединение"
+        case "ringing":
+            return isIncomingRinging ? "Входящий звонок" : "Вызов"
+        case "active", "connected":
+            return "На связи"
+        case "ended":
+            return "Завершено"
+        default:
+            return "Соединение"
         }
     }
 }
@@ -100,13 +123,15 @@ private struct CallCircleButton: View {
                 Image(systemName: systemImage)
                     .font(.system(size: 26, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 68, height: 68)
+                    .frame(width: 72, height: 72)
                     .background(color, in: Circle())
                     .overlay(Circle().stroke(.white.opacity(0.22), lineWidth: 1))
+
                 Text(title)
-                    .font(.caption)
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.white)
             }
+            .frame(minWidth: 92)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)

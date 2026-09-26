@@ -11,7 +11,7 @@ struct ConfigurationView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                background
+                VoiceBackground()
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
@@ -20,6 +20,7 @@ struct ConfigurationView: View {
                         VStack(alignment: .leading, spacing: 14) {
                             Text("Подключение сервера")
                                 .font(.title2.bold())
+
                             Text("Введите адреса Supabase и LiveKit. Секреты здесь не нужны. Настройки можно сбросить позже в профиле.")
                                 .font(.body)
                                 .foregroundStyle(.secondary)
@@ -28,10 +29,12 @@ struct ConfigurationView: View {
                                 .keyboardType(.URL)
                                 .textContentType(.URL)
                                 .textFieldStyle(VOICETextFieldStyle())
+
                             SecureField("Publishable key", text: $publishableKey)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                                 .textFieldStyle(VOICETextFieldStyle())
+
                             TextField("LiveKit URL", text: $livekitURL)
                                 .keyboardType(.URL)
                                 .textContentType(.URL)
@@ -62,15 +65,6 @@ struct ConfigurationView: View {
         }
     }
 
-    private var background: some View {
-        ZStack {
-            Color(.systemBackground)
-            VOICEGradient()
-                .opacity(0.16)
-                .ignoresSafeArea()
-        }
-    }
-
     private var brandHeader: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("VOICE")
@@ -84,9 +78,7 @@ struct ConfigurationView: View {
     }
 
     private var isValid: Bool {
-        !supabaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !publishableKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !livekitURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !supabaseURL.voiceTrimmed.isEmpty && !publishableKey.voiceTrimmed.isEmpty && !livekitURL.voiceTrimmed.isEmpty
     }
 
     private func save() {
@@ -94,9 +86,9 @@ struct ConfigurationView: View {
         isSaving = true
         do {
             try store.saveConfiguration(
-                supabaseURL: supabaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
-                publishableKey: publishableKey.trimmingCharacters(in: .whitespacesAndNewlines),
-                livekitURL: livekitURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                supabaseURL: supabaseURL.voiceTrimmed,
+                publishableKey: publishableKey.voiceTrimmed,
+                livekitURL: livekitURL.voiceTrimmed
             )
         } catch {
             store.error = error.localizedDescription
