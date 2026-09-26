@@ -1,0 +1,27 @@
+name: Swift model contracts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/VOICE/Models.swift'
+      - 'Tests/Contracts/**'
+      - '.github/workflows/contracts.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: Compile and run Swift model contracts
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          show-progress: false
+      - name: Compile contract tests
+        run: swiftc ios/VOICE/Models.swift Tests/Contracts/main.swift -o /tmp/voice-contract-tests
+      - name: Run contract tests
+        run: /tmp/voice-contract-tests
