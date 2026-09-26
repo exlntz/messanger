@@ -183,7 +183,8 @@ final class CallAudioService: ObservableObject {
     }
 
     func disconnect() async {
-        let disconnectGeneration = nextGeneration()
+        let ownerGeneration = sessionOwnerGeneration
+        _ = nextGeneration()
         let taskToCancel = connectTask
         let roomToDisconnect = room
 
@@ -198,7 +199,7 @@ final class CallAudioService: ObservableObject {
             await roomToDisconnect.disconnect()
         }
 
-        await deactivateCallSessionIfOwned(by: disconnectGeneration)
+        await deactivateCallSessionIfOwned(by: ownerGeneration)
     }
 
     func setMuted(_ muted: Bool) async throws {
@@ -294,8 +295,8 @@ final class CallAudioService: ObservableObject {
         sessionOwnerGeneration = ownerGeneration
     }
 
-    private func deactivateCallSessionIfOwned(by ownerGeneration: Int) async {
-        guard sessionOwnerGeneration == ownerGeneration else { return }
+    private func deactivateCallSessionIfOwned(by ownerGeneration: Int?) async {
+        guard let ownerGeneration, sessionOwnerGeneration == ownerGeneration else { return }
         do {
             try audioSession.setCategory(
                 .playAndRecord,
