@@ -26,7 +26,9 @@ const allowedOrigins = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
 
 function corsHeaders(origin: string | null): HeadersInit {
   if (!origin) return {};
-  if (allowedOrigins.length === 0 || !allowedOrigins.includes(origin)) return {};
+  if (allowedOrigins.length === 0 || !allowedOrigins.includes(origin)) {
+    return {};
+  }
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Headers": "authorization, apikey, content-type",
@@ -56,7 +58,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function getCallId(payload: unknown): string | null {
   if (!isRecord(payload) || typeof payload.call_id !== "string") return null;
   const callId = payload.call_id.trim();
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(callId)) {
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      .test(callId)
+  ) {
     return null;
   }
   return callId;
@@ -81,7 +86,8 @@ function isOldRinging(call: CallRow): boolean {
 }
 
 function isStaleAccepted(call: CallRow): boolean {
-  return call.status === "accepted" && ageMs(call.created_at) > 2 * 60 * 60 * 1000;
+  return call.status === "accepted" &&
+    ageMs(call.created_at) > 2 * 60 * 60 * 1000;
 }
 
 async function handleRequest(req: Request): Promise<Response> {
@@ -98,7 +104,10 @@ async function handleRequest(req: Request): Promise<Response> {
     return json(405, { error: "Use POST" }, origin);
   }
 
-  if (!supabaseUrl || !supabaseAnonKey || !livekitApiKey || !livekitApiSecret || !livekitUrl) {
+  if (
+    !supabaseUrl || !supabaseAnonKey || !livekitApiKey || !livekitApiSecret ||
+    !livekitUrl
+  ) {
     return json(500, { error: "Server is not configured" }, origin);
   }
 
@@ -114,7 +123,9 @@ async function handleRequest(req: Request): Promise<Response> {
     auth: { persistSession: false },
   });
 
-  const { data: authData, error: authError } = await userClient.auth.getUser(jwt);
+  const { data: authData, error: authError } = await userClient.auth.getUser(
+    jwt,
+  );
   if (authError || !authData.user) {
     return json(401, { error: "Invalid Supabase session" }, origin);
   }
@@ -131,14 +142,18 @@ async function handleRequest(req: Request): Promise<Response> {
     return json(400, { error: "call_id is required" }, origin);
   }
 
-  const { error: cleanupError } = await userClient.rpc("expire_old_ringing_calls");
+  const { error: cleanupError } = await userClient.rpc(
+    "expire_old_ringing_calls",
+  );
   if (cleanupError) {
     return json(500, { error: "Call cleanup failed" }, origin);
   }
 
   const { data: call, error: callError } = await userClient
     .from("calls")
-    .select("id, conversation_id, caller_id, callee_id, status, created_at, ended_at")
+    .select(
+      "id, conversation_id, caller_id, callee_id, status, created_at, ended_at",
+    )
     .eq("id", callId)
     .single<CallRow>();
 
@@ -164,7 +179,9 @@ async function handleRequest(req: Request): Promise<Response> {
     return json(409, { error: "Accepted call expired" }, origin);
   }
   if (isCaller && call.status !== "ringing" && call.status !== "accepted") {
-    return json(409, { error: "Caller can join only ringing or accepted calls" }, origin);
+    return json(409, {
+      error: "Caller can join only ringing or accepted calls",
+    }, origin);
   }
   if (isCallee && call.status !== "accepted") {
     return json(409, { error: "Callee can join only accepted calls" }, origin);
