@@ -23,19 +23,19 @@ final class VoiceRecorder: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .alreadyRecording:
-                return "A recording is already in progress."
+                return "Запись уже идет."
             case .notRecording:
-                return "There is no recording to stop."
+                return "Нет записи для остановки."
             case .microphonePermissionDenied:
-                return "Microphone access is required to record voice messages."
+                return "Нужен доступ к микрофону для голосовых сообщений."
             case .recordingUnavailableDuringCall:
-                return "Voice recording is unavailable while call audio is active."
+                return "Запись голосового сообщения недоступна во время звонка."
             case .failedToStartRecording:
-                return "Failed to start audio recording."
+                return "Не удалось начать запись звука."
             case .interrupted:
-                return "The recording was interrupted."
+                return "Запись была прервана."
             case .failedRecording:
-                return "The recording failed."
+                return "Запись не удалась."
             case .encodingFailed(let message):
                 return message
             }
@@ -66,6 +66,9 @@ final class VoiceRecorder: ObservableObject {
     private var elapsedTask: Task<Void, Never>?
     private var finishedResult: (url: URL, duration: Double)?
     private var finishedError: Error?
+    private var generation = 0
+    private var activeRecordingGeneration: Int?
+    private var sessionOwnerGeneration: Int?
 
     init(notificationCenter: NotificationCenter = .default) {
         self.notificationCenter = notificationCenter
@@ -124,9 +127,14 @@ final class VoiceRecorder: ObservableObject {
             throw RecorderError.alreadyRecording
         }
 
+        let startGeneration = nextGeneration()
         clearFinishedState(deleteFile: true)
 
         let hasPermission = try await requestMicrophonePermission()
+        try Task.checkCancellation()
+        guard generation == startGeneration, recorder == nil, !isRecording else {
+            throw CancellationError()
+        }
         guard hasPermission else {
             throw RecorderError.microphonePermissionDenied
         }
@@ -144,28 +152,33 @@ final class VoiceRecorder: ObservableObject {
             AVEncoderBitRateKey: 64_000
         ]
 
-        try configureSessionForRecording()
-
         do {
+            try configureSessionForRecording(ownerGeneration: startGeneration)
+            try Task.checkCancellation()
+            guard generation == startGeneration else { throw CancellationError() }
+
             let recorder = try AVAudioRecorder(url: url, settings: settings)
             recorder.delegate = delegateProxy
             recorder.isMeteringEnabled = false
             recorder.prepareToRecord()
 
             guard recorder.record(forDuration: Self.maxDuration) else {
-                try? deactivateSession()
+                try? FileManager.default.removeItem(at: url)
+                await deactivateSessionIfOwned(by: startGeneration)
                 throw RecorderError.failedToStartRecording
             }
 
             self.recorder = recorder
             recordingURL = url
             recordingStartedAt = Date()
+            activeRecordingGeneration = startGeneration
             isRecording = true
             elapsed = 0
             startElapsedTask()
         } catch {
-            cleanupActiveRecording(deleteFile: true)
-            try? deactivateSession()
+            cleanupActiveRecording(deleteFile: true, keepRecordingVisible: false)
+            try? FileManager.default.removeItem(at: url)
+            await deactivateSessionIfOwned(by: startGeneration)
             throw error
         }
     }
@@ -176,7 +189,7 @@ final class VoiceRecorder: ObservableObject {
         }
 
         if let result = consumeFinishedResult() {
-            elapsed = result.duration
+            resetStateAfterSuccessfulStop(duration: result.duration)
             return result
         }
 
@@ -185,20 +198,27 @@ final class VoiceRecorder: ObservableObject {
         }
 
         let duration = normalizedDuration(from: recorder.currentTime)
+        let ownerGeneration = activeRecordingGeneration
 
         recorder.delegate = nil
         recorder.stop()
 
         let result = (url: recordingURL, duration: duration)
         resetStateAfterSuccessfulStop(duration: duration)
-        try? deactivateSession()
+        Task { await deactivateSessionIfOwned(by: ownerGeneration) }
         return result
     }
 
     func cancel() {
+        let cancelledGeneration = nextGeneration()
+        let ownerGeneration = sessionOwnerGeneration
+
         clearFinishedState(deleteFile: true)
-        cleanupActiveRecording(deleteFile: true)
-        try? deactivateSession()
+        cleanupActiveRecording(deleteFile: true, keepRecordingVisible: false)
+
+        if ownerGeneration == cancelledGeneration || ownerGeneration != nil {
+            Task { await deactivateSessionIfOwned(by: ownerGeneration) }
+        }
     }
 
     private func requestMicrophonePermission() async throws -> Bool {
@@ -223,17 +243,30 @@ final class VoiceRecorder: ObservableObject {
         return mode == .voiceChat || mode == .videoChat
     }
 
-    private func configureSessionForRecording() throws {
+    private func configureSessionForRecording(ownerGeneration: Int) throws {
+        guard generation == ownerGeneration else { throw CancellationError() }
         try audioSession.setCategory(
             .playAndRecord,
             mode: .default,
             options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
         )
         try audioSession.setActive(true)
+        sessionOwnerGeneration = ownerGeneration
     }
 
-    private func deactivateSession() throws {
-        try audioSession.setActive(false, options: [.notifyOthersOnDeactivation])
+    private func deactivateSessionIfOwned(by ownerGeneration: Int?) async {
+        guard let ownerGeneration, sessionOwnerGeneration == ownerGeneration else { return }
+        do {
+            try audioSession.setCategory(
+                .playAndRecord,
+                mode: .default,
+                options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
+            )
+            try audioSession.setActive(false, options: [.notifyOthersOnDeactivation])
+            sessionOwnerGeneration = nil
+        } catch {
+            sessionOwnerGeneration = nil
+        }
     }
 
     private func makeRecordingURL() -> URL {
@@ -269,15 +302,29 @@ final class VoiceRecorder: ObservableObject {
         max(0, min(rawDuration, Self.maxDuration))
     }
 
+    private func durationForFinishedRecorder(_ recorder: AVAudioRecorder) -> Double {
+        let recorderDuration = normalizedDuration(from: recorder.currentTime)
+        let visibleDuration = normalizedDuration(from: elapsed)
+        let startedDuration = recordingStartedAt.map { normalizedDuration(from: Date().timeIntervalSince($0)) } ?? 0
+        let bestDuration = max(recorderDuration, visibleDuration, startedDuration)
+
+        if bestDuration >= Self.maxDuration - 1 {
+            return Self.maxDuration
+        }
+
+        return bestDuration
+    }
+
     private func handleRecorderFinish(recorder: AVAudioRecorder, successfully: Bool) {
         guard recorder === self.recorder else { return }
+        let ownerGeneration = activeRecordingGeneration
 
         if successfully, let recordingURL {
-            let duration = normalizedDuration(from: recorder.currentTime)
+            let duration = durationForFinishedRecorder(recorder)
             finishedResult = (url: recordingURL, duration: duration)
             elapsed = duration
-            cleanupActiveRecording(deleteFile: false)
-            try? deactivateSession()
+            cleanupActiveRecording(deleteFile: false, keepRecordingVisible: true)
+            Task { await deactivateSessionIfOwned(by: ownerGeneration) }
         } else {
             finishWithFailure(RecorderError.failedRecording, deleteFile: true)
         }
@@ -297,7 +344,7 @@ final class VoiceRecorder: ObservableObject {
     }
 
     private func handleInterruption(_ notification: Notification) {
-        guard isRecording else { return }
+        guard recorder != nil else { return }
 
         let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
         guard let type = typeValue.flatMap(AVAudioSession.InterruptionType.init(rawValue:)) else {
@@ -310,12 +357,13 @@ final class VoiceRecorder: ObservableObject {
     }
 
     private func finishWithFailure(_ error: Error, deleteFile: Bool) {
+        let ownerGeneration = activeRecordingGeneration
         finishedError = error
-        cleanupActiveRecording(deleteFile: deleteFile)
-        try? deactivateSession()
+        cleanupActiveRecording(deleteFile: deleteFile, keepRecordingVisible: false)
+        Task { await deactivateSessionIfOwned(by: ownerGeneration) }
     }
 
-    private func cleanupActiveRecording(deleteFile: Bool) {
+    private func cleanupActiveRecording(deleteFile: Bool, keepRecordingVisible: Bool) {
         elapsedTask?.cancel()
         elapsedTask = nil
 
@@ -327,15 +375,16 @@ final class VoiceRecorder: ObservableObject {
         }
 
         self.recorder = nil
-        isRecording = false
+        isRecording = keepRecordingVisible
         recordingStartedAt = nil
+        activeRecordingGeneration = nil
 
         if deleteFile, let recordingURL {
             try? FileManager.default.removeItem(at: recordingURL)
             elapsed = 0
             self.recordingURL = nil
         } else {
-            self.recordingURL = recordingURL
+            self.recordingURL = keepRecordingVisible ? recordingURL : nil
         }
     }
 
@@ -346,6 +395,7 @@ final class VoiceRecorder: ObservableObject {
         isRecording = false
         recordingStartedAt = nil
         recordingURL = nil
+        activeRecordingGeneration = nil
         finishedResult = nil
         finishedError = nil
         elapsed = duration
@@ -357,6 +407,10 @@ final class VoiceRecorder: ObservableObject {
         }
         finishedResult = nil
         finishedError = nil
+        if recorder == nil {
+            isRecording = false
+            recordingURL = nil
+        }
     }
 
     private func consumeFinishedResult() -> (url: URL, duration: Double)? {
@@ -367,5 +421,10 @@ final class VoiceRecorder: ObservableObject {
     private func consumeFinishedError() -> Error? {
         defer { finishedError = nil }
         return finishedError
+    }
+
+    private func nextGeneration() -> Int {
+        generation += 1
+        return generation
     }
 }

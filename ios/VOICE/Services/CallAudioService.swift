@@ -15,9 +15,9 @@ final class CallAudioService: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .microphonePermissionDenied:
-                return "Microphone access is required for calls."
+                return "Нужен доступ к микрофону для звонков."
             case .notConnected:
-                return "The call is not connected."
+                return "Звонок не подключен."
             }
         }
     }
@@ -67,6 +67,8 @@ final class CallAudioService: ObservableObject {
     private var room: Room?
     private var connectTask: Task<Void, Error>?
     private var desiredMuted = false
+    private var generation = 0
+    private var sessionOwnerGeneration: Int?
 
     init() {
         delegateProxy.onConnectionStateChange = { [weak self] room, state in
@@ -77,34 +79,37 @@ final class CallAudioService: ObservableObject {
         delegateProxy.onDidConnect = { [weak self] room in
             Task { @MainActor [weak self] in
                 guard self?.room === room else { return }
-                self?.connectionLabel = "Connected"
+                self?.connectionLabel = "На связи"
             }
         }
         delegateProxy.onReconnecting = { [weak self] room in
             Task { @MainActor [weak self] in
                 guard self?.room === room else { return }
-                self?.connectionLabel = "Reconnecting…"
+                self?.connectionLabel = "Переподключение..."
             }
         }
         delegateProxy.onDidReconnect = { [weak self] room in
             Task { @MainActor [weak self] in
                 guard self?.room === room else { return }
-                self?.connectionLabel = "Connected"
+                self?.connectionLabel = "На связи"
             }
         }
-        delegateProxy.onDidFailToConnect = { [weak self] room, error in
+        delegateProxy.onDidFailToConnect = { [weak self] room, _ in
             Task { @MainActor [weak self] in
                 guard self?.room === room else { return }
-                self?.connectionLabel = error?.localizedDescription ?? "Connection failed"
+                self?.connectionLabel = "Ошибка подключения"
             }
         }
-        delegateProxy.onDidDisconnect = { [weak self] room, error in
+        delegateProxy.onDidDisconnect = { [weak self] room, _ in
             Task { @MainActor [weak self] in
                 guard let self, self.room === room else { return }
-                self.connectionLabel = error?.localizedDescription ?? "Disconnected"
+                let endedGeneration = self.generation
+                self.connectionLabel = "Отключено"
                 self.isMuted = false
                 self.room = nil
-                await self.deactivateCallSessionIfPossible()
+                self.connectTask = nil
+                self.desiredMuted = false
+                await self.deactivateCallSessionIfOwned(by: endedGeneration)
             }
         }
         delegateProxy.onLocalMuteChanged = { [weak self] room, muted in
@@ -118,7 +123,11 @@ final class CallAudioService: ObservableObject {
     func connect(url: String, token: String) async throws {
         await disconnect()
 
+        let connectGeneration = nextGeneration()
+
         let hasPermission = try await requestMicrophonePermission()
+        try Task.checkCancellation()
+        guard generation == connectGeneration else { throw CancellationError() }
         guard hasPermission else {
             throw CallAudioError.microphonePermissionDenied
         }
@@ -127,16 +136,25 @@ final class CallAudioService: ObservableObject {
         self.room = room
         desiredMuted = false
         isMuted = false
-        connectionLabel = "Connecting…"
+        connectionLabel = "Подключение..."
 
-        let task = Task { [weak self, room] in
+        let task = Task { [weak self, room, connectGeneration] in
             guard let self else { return }
+            guard await self.isCurrent(room: room, generation: connectGeneration) else {
+                throw CancellationError()
+            }
 
-            try self.configureCallSession()
+            try await self.configureCallSession(for: connectGeneration)
             try Task.checkCancellation()
+            guard await self.isCurrent(room: room, generation: connectGeneration) else {
+                throw CancellationError()
+            }
 
             try await room.connect(url: url, token: token)
             try Task.checkCancellation()
+            guard await self.isCurrent(room: room, generation: connectGeneration) else {
+                throw CancellationError()
+            }
 
             try await room.localParticipant.setMicrophone(enabled: true)
         }
@@ -152,53 +170,61 @@ final class CallAudioService: ObservableObject {
 
             connectTask = nil
 
-            if self.room === room {
+            if self.room === room, generation == connectGeneration {
                 isMuted = false
                 connectionLabel = displayLabel(for: room.connectionState)
             }
         } catch {
             connectTask = nil
             task.cancel()
-            await cleanupAfterFailedConnect(for: room)
+            await cleanupAfterFailedConnect(for: room, generation: connectGeneration)
             throw error
         }
     }
 
     func disconnect() async {
-        connectTask?.cancel()
+        let disconnectGeneration = nextGeneration()
+        let taskToCancel = connectTask
+        let roomToDisconnect = room
 
-        if let connectTask {
-            _ = try? await connectTask.value
-        }
-        self.connectTask = nil
-
-        let room = self.room
-        self.room = nil
+        taskToCancel?.cancel()
+        connectTask = nil
+        room = nil
         desiredMuted = false
         isMuted = false
         connectionLabel = ""
 
-        if let room {
-            await room.disconnect()
+        if let roomToDisconnect {
+            await roomToDisconnect.disconnect()
         }
 
-        await deactivateCallSessionIfPossible()
+        await deactivateCallSessionIfOwned(by: disconnectGeneration)
     }
 
     func setMuted(_ muted: Bool) async throws {
         guard let room else {
             throw CallAudioError.notConnected
         }
+        let muteGeneration = generation
         guard room.connectionState == .connected else {
             throw CallAudioError.notConnected
         }
 
         if !muted {
             let hasPermission = try await requestMicrophonePermission()
+            try Task.checkCancellation()
+            guard self.room === room, generation == muteGeneration else {
+                throw CancellationError()
+            }
             guard hasPermission else {
                 throw CallAudioError.microphonePermissionDenied
             }
-            try configureCallSession()
+            try await configureCallSession(for: muteGeneration)
+        }
+
+        try Task.checkCancellation()
+        guard self.room === room, generation == muteGeneration else {
+            throw CancellationError()
         }
 
         desiredMuted = muted
@@ -214,28 +240,30 @@ final class CallAudioService: ObservableObject {
     private func displayLabel(for state: ConnectionState) -> String {
         switch state {
         case .connecting:
-            return "Connecting…"
+            return "Подключение..."
         case .reconnecting:
-            return "Reconnecting…"
+            return "Переподключение..."
         case .connected:
-            return "Connected"
+            return "На связи"
         case .disconnecting:
-            return "Disconnecting…"
+            return "Отключение..."
         case .disconnected:
-            return "Disconnected"
+            return "Отключено"
         @unknown default:
-            return "Connection changed"
+            return "Состояние звонка изменилось"
         }
     }
 
-    private func cleanupAfterFailedConnect(for room: Room) async {
-        if self.room === room {
+    private func cleanupAfterFailedConnect(for room: Room, generation connectGeneration: Int) async {
+        if self.room === room, generation == connectGeneration {
             self.room = nil
             isMuted = false
             connectionLabel = ""
+            desiredMuted = false
         }
+
         await room.disconnect()
-        await deactivateCallSessionIfPossible()
+        await deactivateCallSessionIfOwned(by: connectGeneration)
     }
 
     private func requestMicrophonePermission() async throws -> Bool {
@@ -255,20 +283,38 @@ final class CallAudioService: ObservableObject {
         }
     }
 
-    private func configureCallSession() throws {
+    private func configureCallSession(for ownerGeneration: Int) async throws {
+        guard generation == ownerGeneration else { throw CancellationError() }
         try audioSession.setCategory(
             .playAndRecord,
             mode: .voiceChat,
             options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
         )
         try audioSession.setActive(true)
+        sessionOwnerGeneration = ownerGeneration
     }
 
-    private func deactivateCallSessionIfPossible() async {
+    private func deactivateCallSessionIfOwned(by ownerGeneration: Int) async {
+        guard sessionOwnerGeneration == ownerGeneration else { return }
         do {
+            try audioSession.setCategory(
+                .playAndRecord,
+                mode: .default,
+                options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
+            )
             try audioSession.setActive(false, options: [.notifyOthersOnDeactivation])
+            sessionOwnerGeneration = nil
         } catch {
-            // Leave the shared session as-is if another owner still needs it.
+            sessionOwnerGeneration = nil
         }
+    }
+
+    private func nextGeneration() -> Int {
+        generation += 1
+        return generation
+    }
+
+    private func isCurrent(room: Room, generation expectedGeneration: Int) -> Bool {
+        self.room === room && generation == expectedGeneration
     }
 }
