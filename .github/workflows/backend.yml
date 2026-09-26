@@ -47,19 +47,19 @@ jobs:
       - name: Bootstrap local backend test database
         env:
           DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
-        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -a -f supabase/tests/bootstrap_local.sql
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -f supabase/tests/bootstrap_local.sql
 
       - name: Apply base backend migration
         env:
           DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
-        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -a -f supabase/migrations/202609260001_voice_backend.sql
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -f supabase/migrations/202609260001_voice_backend.sql
 
       - name: Apply backend hardening migration
         env:
           DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
-        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -a -f supabase/migrations/202609260002_voice_backend_hardening.sql
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -f supabase/migrations/202609260002_voice_backend_hardening.sql
 
       - name: Run SQL security tests with psql
         env:
           DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
-        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -a -f supabase/tests/voice_security.sql
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -f supabase/tests/voice_security.sql
