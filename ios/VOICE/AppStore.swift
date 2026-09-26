@@ -39,9 +39,9 @@ final class AppStore: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: configurationKey),
            let saved = try? JSONDecoder().decode(ServerConfiguration.self, from: data),
            let checked = try? ServerConfiguration(
-               supabaseURL: saved.supabaseURL.absoluteString,
-               publishableKey: saved.publishableKey,
-               livekitURL: saved.livekitURL.absoluteString) {
+                supabaseURL: saved.supabaseURL.absoluteString,
+                publishableKey: saved.publishableKey,
+                livekitURL: saved.livekitURL.absoluteString) {
             config = checked
             backend = BackendClient(config: checked)
         }
@@ -54,6 +54,11 @@ final class AppStore: ObservableObject {
         audio.$connectionLabel.sink { [weak self] value in
             Task { @MainActor [weak self] in
                 self?.handleAudioConnectionLabel(value)
+            }
+        }.store(in: &subscriptions)
+        audio.$isDisconnected.removeDuplicates().sink { [weak self] value in
+            Task { @MainActor [weak self] in
+                self?.handleAudioDisconnected(value)
             }
         }.store(in: &subscriptions)
     }
@@ -700,16 +705,27 @@ final class AppStore: ObservableObject {
     }
 
     private func handleAudioConnectionLabel(_ label: String) {
-        guard let call = activeCall else {
+        guard activeCall != nil else {
             if label.isEmpty { callConnectionLabel = "" }
             return
         }
         guard !label.isEmpty else { return }
         callConnectionLabel = label
-        if label == "Disconnected",
-           call.status == "accepted",
-           !callAction {
-            Task { await self.endCall() }
+    }
+
+    private func handleAudioDisconnected(_ disconnected: Bool) {
+        guard disconnected,
+              let call = activeCall,
+              call.status == "accepted",
+              !callAction else { return }
+        let ticket = epoch
+        Task { [weak self] in
+            guard let self else { return }
+            guard self.epoch == ticket,
+                  self.audio.isDisconnected,
+                  self.activeCall?.id == call.id,
+                  self.activeCall?.status == "accepted" else { return }
+            await self.endCall()
         }
     }
 

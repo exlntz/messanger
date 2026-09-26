@@ -7,6 +7,7 @@ import LiveKit
 final class CallAudioService: ObservableObject {
     @Published private(set) var connectionLabel = ""
     @Published private(set) var isMuted = false
+    @Published private(set) var isDisconnected = false
 
     private enum CallAudioError: LocalizedError {
         case microphonePermissionDenied
@@ -31,7 +32,9 @@ final class CallAudioService: ObservableObject {
         var onDidDisconnect: ((Room, LiveKitError?) -> Void)?
         var onLocalMuteChanged: ((Room, Bool) -> Void)?
 
-        func room(_ room: Room, didUpdateConnectionState connectionState: ConnectionState, from oldConnectionState: ConnectionState) {
+        func room(_ room: Room,
+                  didUpdateConnectionState connectionState: ConnectionState,
+                  from oldConnectionState: ConnectionState) {
             onConnectionStateChange?(room, connectionState)
         }
 
@@ -55,7 +58,10 @@ final class CallAudioService: ObservableObject {
             onDidDisconnect?(room, error)
         }
 
-        func room(_ room: Room, participant: Participant, trackPublication: TrackPublication, didUpdateIsMuted isMuted: Bool) {
+        func room(_ room: Room,
+                  participant: Participant,
+                  trackPublication: TrackPublication,
+                  didUpdateIsMuted isMuted: Bool) {
             guard participant is LocalParticipant else { return }
             onLocalMuteChanged?(room, isMuted)
         }
@@ -79,18 +85,21 @@ final class CallAudioService: ObservableObject {
         delegateProxy.onDidConnect = { [weak self] room in
             Task { @MainActor [weak self] in
                 guard self?.room === room else { return }
+                self?.isDisconnected = false
                 self?.connectionLabel = "На связи"
             }
         }
         delegateProxy.onReconnecting = { [weak self] room in
             Task { @MainActor [weak self] in
                 guard self?.room === room else { return }
+                self?.isDisconnected = false
                 self?.connectionLabel = "Переподключение..."
             }
         }
         delegateProxy.onDidReconnect = { [weak self] room in
             Task { @MainActor [weak self] in
                 guard self?.room === room else { return }
+                self?.isDisconnected = false
                 self?.connectionLabel = "На связи"
             }
         }
@@ -104,6 +113,7 @@ final class CallAudioService: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, self.room === room else { return }
                 let endedGeneration = self.generation
+                self.isDisconnected = true
                 self.connectionLabel = "Отключено"
                 self.isMuted = false
                 self.room = nil
@@ -136,6 +146,7 @@ final class CallAudioService: ObservableObject {
         self.room = room
         desiredMuted = false
         isMuted = false
+        isDisconnected = false
         connectionLabel = "Подключение..."
 
         let task = Task { [weak self, room, connectGeneration] in
@@ -172,6 +183,7 @@ final class CallAudioService: ObservableObject {
 
             if self.room === room, generation == connectGeneration {
                 isMuted = false
+                isDisconnected = room.connectionState == .disconnected
                 connectionLabel = displayLabel(for: room.connectionState)
             }
         } catch {
@@ -193,6 +205,7 @@ final class CallAudioService: ObservableObject {
         room = nil
         desiredMuted = false
         isMuted = false
+        isDisconnected = false
         connectionLabel = ""
 
         if let roomToDisconnect {
@@ -235,6 +248,7 @@ final class CallAudioService: ObservableObject {
 
     private func handleConnectionStateChange(for room: Room, state: ConnectionState) {
         guard self.room === room else { return }
+        isDisconnected = state == .disconnected
         connectionLabel = displayLabel(for: state)
     }
 
@@ -259,6 +273,7 @@ final class CallAudioService: ObservableObject {
         if self.room === room, generation == connectGeneration {
             self.room = nil
             isMuted = false
+            isDisconnected = false
             connectionLabel = ""
             desiredMuted = false
         }
@@ -296,7 +311,10 @@ final class CallAudioService: ObservableObject {
     }
 
     private func deactivateCallSessionIfOwned(by ownerGeneration: Int?) async {
-        guard let ownerGeneration, sessionOwnerGeneration == ownerGeneration else { return }
+        guard let ownerGeneration,
+              sessionOwnerGeneration == ownerGeneration else {
+            return
+        }
         do {
             try audioSession.setCategory(
                 .playAndRecord,
