@@ -5,12 +5,10 @@ on:
     branches: [main]
     paths:
       - "supabase/**"
-      - "docs/BACKEND.md"
       - ".github/workflows/backend.yml"
   pull_request:
     paths:
       - "supabase/**"
-      - "docs/BACKEND.md"
       - ".github/workflows/backend.yml"
 
 permissions:
@@ -22,25 +20,44 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 54322:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Install Supabase CLI
-        uses: supabase/setup-cli@v1
-        with:
-          version: latest
 
       - name: Install psql client
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql-client
 
-      - name: Start local Supabase database
-        run: supabase db start
+      - name: Bootstrap local backend test database
+        env:
+          DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/bootstrap_local.sql
 
-      - name: Reset local database with migrations
-        run: supabase db reset --local
+      - name: Apply base backend migration
+        env:
+          DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/202609260001_voice_backend.sql
+
+      - name: Apply backend hardening migration
+        env:
+          DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/202609260002_voice_backend_hardening.sql
 
       - name: Run SQL security tests with psql
         env:
