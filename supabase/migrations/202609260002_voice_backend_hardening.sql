@@ -230,7 +230,7 @@ begin
 
   perform private.expire_stale_calls();
 
-  select count(*), max(cm.user_id) filter (where cm.user_id <> me)
+  select count(*), (max(cm.user_id::text) filter (where cm.user_id <> me))::uuid
   into member_count, peer
   from public.conversation_members as cm
   where cm.conversation_id = p_conversation_id;
