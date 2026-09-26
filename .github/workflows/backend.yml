@@ -38,28 +38,36 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          show-progress: false
 
       - name: Install psql client
         run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client
+          sudo apt-get update -qq >/tmp/apt.log 2>&1
+          sudo apt-get install -y -qq postgresql-client >>/tmp/apt.log 2>&1
 
-      - name: Bootstrap local backend test database
+      - name: Run backend SQL security tests
         env:
           DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
-        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -f supabase/tests/bootstrap_local.sql
+        run: |
+          set -euo pipefail
+          run_sql() {
+            local label="$1"
+            local file="$2"
+            local log="/tmp/${label//[^A-Za-z0-9_-]/_}.log"
+            echo "== ${label} =="
+            if ! psql "$DB_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -f "$file" >"$log" 2>&1; then
+              local summary
+              summary=$(grep -E "ERROR:|EXCEPTION|SQLSTATE|expected|psql:" "$log" | tail -1 | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
+              echo "::error title=${label} failed::${summary:-SQL command failed}"
+              echo "---- ${label} failure tail ----"
+              tail -80 "$log"
+              exit 1
+            fi
+          }
 
-      - name: Apply base backend migration
-        env:
-          DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
-        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -f supabase/migrations/202609260001_voice_backend.sql
-
-      - name: Apply backend hardening migration
-        env:
-          DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
-        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -f supabase/migrations/202609260002_voice_backend_hardening.sql
-
-      - name: Run SQL security tests with psql
-        env:
-          DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
-        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -f supabase/tests/voice_security.sql
+          run_sql "bootstrap-local" "supabase/tests/bootstrap_local.sql"
+          run_sql "base-migration" "supabase/migrations/202609260001_voice_backend.sql"
+          run_sql "hardening-migration" "supabase/migrations/202609260002_voice_backend_hardening.sql"
+          run_sql "voice-security" "supabase/tests/voice_security.sql"
+          echo "Backend SQL security tests passed"
