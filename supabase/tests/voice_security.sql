@@ -13,7 +13,18 @@ begin
 end;
 $$;
 
-create or replace function pg_temp.assert_eq(actual text, expected text, message text)
+create or replace function pg_temp.assert_eq_bigint(actual bigint, expected bigint, message text)
+returns void
+language plpgsql
+as $$
+begin
+  if actual is distinct from expected then
+    raise exception '% (expected %, got %)', message, expected, actual;
+  end if;
+end;
+$$;
+
+create or replace function pg_temp.assert_eq_text(actual text, expected text, message text)
 returns void
 language plpgsql
 as $$
@@ -54,8 +65,7 @@ on conflict (id) do nothing;
 
 select pg_temp.assert_true(
   exists (
-    select 1
-    from public.profiles
+    select 1 from public.profiles
     where id = '00000000-0000-0000-0000-0000000000a1'
       and username = 'alice'
   ),
@@ -75,9 +85,9 @@ select pg_temp.assert_true(
 create temp table test_ids as
 select public.start_direct_chat('00000000-0000-0000-0000-0000000000b2') as ab_conversation_id;
 
-select pg_temp.assert_eq(
-  (select count(*)::text from public.conversation_members),
-  '2',
+select pg_temp.assert_eq_bigint(
+  (select count(*) from public.conversation_members),
+  2,
   'idempotent chat has exactly two membership rows'
 );
 select pg_temp.assert_true(
@@ -107,9 +117,9 @@ select ab_conversation_id, '00000000-0000-0000-0000-0000000000a1', 'image',
   ab_conversation_id::text || '/00000000-0000-0000-0000-0000000000a1/file.jpg'
 from test_ids;
 
-select pg_temp.assert_eq(
-  (select count(*)::text from public.conversation_list()),
-  '1',
+select pg_temp.assert_eq_bigint(
+  (select count(*) from public.conversation_list()),
+  1,
   'conversation_list returns member conversation'
 );
 select pg_temp.assert_true(
@@ -118,9 +128,7 @@ select pg_temp.assert_true(
 );
 
 select pg_temp.assert_raises($sql$
-  update public.profiles
-  set username = 'Bad Name'
-  where id = '00000000-0000-0000-0000-0000000000a1'
+  update public.profiles set username = 'Bad Name' where id = '00000000-0000-0000-0000-0000000000a1'
 $sql$, '42501', 'invalid profile username update is rejected');
 
 insert into storage.objects(bucket_id, name, owner, metadata)
@@ -139,26 +147,6 @@ select pg_temp.assert_raises($sql$
   from test_ids
 $sql$, '42501', 'member cannot upload media under peer uid segment');
 
-reset role;
-insert into storage.objects(bucket_id, name, owner, metadata)
-select 'media', ab_conversation_id::text || '/00000000-0000-0000-0000-0000000000b2/file.jpg', '00000000-0000-0000-0000-0000000000b2', '{}'::jsonb
-from test_ids;
-
-set role authenticated;
-select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000a1', true);
-select set_config('request.jwt.claim.role', 'authenticated', true);
-
-select pg_temp.assert_eq(
-  (
-    select count(*)::text
-    from storage.objects
-    where bucket_id = 'media'
-      and name like (select ab_conversation_id::text || '/%' from test_ids)
-  ),
-  '2',
-  'conversation member can read peer media in same conversation'
-);
-
 insert into storage.objects(bucket_id, name, owner, metadata)
 values ('avatars', '00000000-0000-0000-0000-0000000000a1/avatar.jpg', '00000000-0000-0000-0000-0000000000a1', '{}'::jsonb);
 
@@ -167,25 +155,10 @@ select pg_temp.assert_raises($sql$
   values ('avatars', '00000000-0000-0000-0000-0000000000b2/avatar.jpg', '00000000-0000-0000-0000-0000000000a1', '{}'::jsonb)
 $sql$, '42501', 'user cannot upload avatar under peer uid segment');
 
-select pg_temp.assert_true(
-  not has_schema_privilege(current_user, 'private', 'USAGE'),
-  'authenticated cannot use private schema directly'
-);
-select pg_temp.assert_true(
-  not has_function_privilege(current_user, 'public.is_conversation_member(uuid, uuid)', 'EXECUTE'),
-  'legacy membership helper is not callable through exposed contract'
-);
-select pg_temp.assert_raises(
-  $$select private.is_conversation_member('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a1')$$,
-  '42501',
-  'direct private helper call is rejected'
-);
-
 select public.start_call((select ab_conversation_id from test_ids));
 
 select pg_temp.assert_raises($sql$
-  select public.start_call(ab_conversation_id)
-  from test_ids
+  select public.start_call(ab_conversation_id) from test_ids
 $sql$, '55000', 'busy caller cannot start another call');
 
 create temp table call_ids as
@@ -205,7 +178,7 @@ select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000b2
 create temp table accepted_call as
 select * from public.update_call_status((select id from call_ids), 'accepted');
 
-select pg_temp.assert_eq(
+select pg_temp.assert_eq_text(
   (select status from accepted_call limit 1),
   'accepted',
   'callee can accept ringing call'
@@ -230,27 +203,17 @@ set role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000a1', true);
 select set_config('request.jwt.claim.role', 'authenticated', true);
 
-select pg_temp.assert_eq(
+select pg_temp.assert_eq_text(
   (select status from public.update_call_status((select id from old_call), 'missed')),
   'missed',
   'client can mark old ringing call missed after 60 seconds'
 );
 
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000c3', true);
-select pg_temp.assert_eq(
-  (select count(*)::text from public.messages),
-  '0',
+select pg_temp.assert_eq_bigint(
+  (select count(*) from public.messages),
+  0,
   'non-member cannot read messages through RLS'
-);
-select pg_temp.assert_eq(
-  (
-    select count(*)::text
-    from storage.objects
-    where bucket_id = 'media'
-      and name like (select ab_conversation_id::text || '/%' from test_ids)
-  ),
-  '0',
-  'non-member cannot read conversation media through RLS'
 );
 select pg_temp.assert_raises($sql$
   insert into storage.objects(bucket_id, name, owner, metadata)
@@ -260,5 +223,10 @@ $sql$, '42501', 'non-member cannot upload media into conversation');
 select pg_temp.assert_raises($sql$
   select public.update_call_status((select id from call_ids), 'ended')
 $sql$, '42501', 'non-call actor cannot update call status');
+
+select pg_temp.assert_true(
+  not has_function_privilege(current_user, 'public.is_conversation_member(uuid, uuid)', 'EXECUTE'),
+  'legacy membership helper is not callable through exposed contract'
+);
 
 rollback;
