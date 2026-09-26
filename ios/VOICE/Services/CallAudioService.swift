@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Foundation
 import LiveKit
 
@@ -131,7 +132,7 @@ final class CallAudioService: ObservableObject {
         let task = Task { [weak self, room] in
             guard let self else { return }
 
-            try await self.configureCallSession()
+            try self.configureCallSession()
             try Task.checkCancellation()
 
             try await room.connect(url: url, token: token)
@@ -197,7 +198,7 @@ final class CallAudioService: ObservableObject {
             guard hasPermission else {
                 throw CallAudioError.microphonePermissionDenied
             }
-            try await configureCallSession()
+            try configureCallSession()
         }
 
         desiredMuted = muted
@@ -254,7 +255,7 @@ final class CallAudioService: ObservableObject {
         }
     }
 
-    private func configureCallSession() async throws {
+    private func configureCallSession() throws {
         try audioSession.setCategory(
             .playAndRecord,
             mode: .voiceChat,
