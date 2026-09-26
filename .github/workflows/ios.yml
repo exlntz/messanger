@@ -51,6 +51,7 @@ jobs:
             -clonedSourcePackagesDirPath DerivedData/SourcePackages >packages.log 2>&1 || { tail -60 packages.log; exit 1; }
       - name: Build Release for iPhoneOS
         run: |
+          set +e
           set -uo pipefail
           xcodebuild -quiet -project VOICE.xcodeproj -scheme VOICE -configuration Release \
             -destination 'generic/platform=iOS' -derivedDataPath DerivedData \
