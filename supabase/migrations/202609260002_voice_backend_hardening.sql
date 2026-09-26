@@ -286,6 +286,10 @@ begin
 
   perform pg_advisory_xact_lock(hashtext(least(current_call.caller_id, current_call.callee_id)::text), hashtext(greatest(current_call.caller_id, current_call.callee_id)::text));
 
+  if p_status = 'missed' and current_call.status = 'missed' then
+    return current_call;
+  end if;
+
   if current_call.status = 'ringing' and current_call.created_at < now() - interval '60 seconds' then
     update public.calls as c set status = 'missed', ended_at = now()
     where c.id = p_call_id
